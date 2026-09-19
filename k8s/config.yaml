@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elp-config
+  namespace: elearning
+data:
+  SPRING_DATASOURCE_URL: jdbc:mysql://mysql-elp:3306/ELP
+  SPRING_DATASOURCE_USERNAME: root
+  SPRING_DATA_REDIS_HOST: redis-elp
+  SPRING_DATA_REDIS_PORT: "6379"
+  SERVER_PORT: "8086"

@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-elp
+  namespace: elearning
+spec:
+  clusterIP: None
+  selector:
+    app: redis-elp
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-elp
+  namespace: elearning
+spec:
+  serviceName: redis-elp
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-elp
+  template:
+    metadata:
+      labels:
+        app: redis-elp
+    spec:
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/hostname: production-worker-3
+      containers:
+        - name: redis-elp
+          image: redis:7.2-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elp-secret
+                  key: REDIS_PASSWORD
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: redis-data-elp
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data-elp
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi

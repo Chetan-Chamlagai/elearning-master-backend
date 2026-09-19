@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elp
+  namespace: elearning
+  labels:
+    app: elp
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: elp
+  template:
+    metadata:
+      labels:
+        app: elp
+    spec:
+      terminationGracePeriodSeconds: 60
+      nodeSelector:
+        kubernetes.io/hostname: production-worker-1
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z mysql-elp 3306; do echo waiting for mysql; sleep 3; done']
+      containers:
+        - name: elp
+          image: sandip8085/e_learning_platform_sandip:f2d6ec8aad2759769fd7149138b1666d85d6d150
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8086
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: elp-config
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elp-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE
+              value: "30s"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"]
+
+          # Startup probe covers slow boot — liveness/readiness won't fire until this passes.
+          # 5s × 60 = 300s (5 min) max boot window.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8086
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8086
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8086
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5

@@ -1,0 +1,353 @@
+package com.e_learning.services.impl;
+
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.logging.Logger;
+import java.util.stream.Collectors;
+
+import org.modelmapper.ModelMapper;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.e_learning.config.AppConstants;
+import com.e_learning.entities.Category;
+import com.e_learning.entities.Payment;
+import com.e_learning.entities.Payment.PaymentStatus;
+import com.e_learning.entities.Role;
+import com.e_learning.entities.User;
+import com.e_learning.exceptions.ResourceNotFoundException;
+
+import com.e_learning.payloads.PaymentDto;
+import com.e_learning.repositories.CategoryRepo;
+import com.e_learning.repositories.PaymentRepo;
+import com.e_learning.repositories.RoleRepo;
+import com.e_learning.repositories.UserRepo;
+import com.e_learning.services.NotificationService;
+import com.e_learning.services.PaymentService;
+@Service
+public class PaymentServiceImpl implements PaymentService {
+
+	private static final org.slf4j.Logger logger = LoggerFactory.getLogger(PaymentServiceImpl.class);
+
+    @Autowired
+    private PaymentRepo paymentRepo;
+
+    @Autowired
+    private CategoryRepo categoryRepo;
+
+    @Autowired
+    private UserRepo userRepo;
+
+    @Autowired
+    private ModelMapper modelMapper;
+
+    @Autowired
+    private RoleRepo roleRepo;
+    
+    @Autowired
+    private NotificationService notificationService;
+    
+    
+    @Override
+    public PaymentDto createPayment(PaymentDto paymentDto, Integer userId, List<Integer> categoryIds) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", "User id", userId));
+
+        if (categoryIds == null || categoryIds.isEmpty()) {
+            throw new IllegalArgumentException("Category IDs cannot be null or empty.");
+        }
+
+        if (categoryIds.size() == 1) {
+            categoryIds = Collections.singletonList(categoryIds.get(0));
+        }
+
+        List<Category> categories = categoryRepo.findAllById(categoryIds);
+
+        if (categories.isEmpty()) {
+            throw new ResourceNotFoundException("Categories", "Category IDs", categoryIds.toString());
+        }
+
+        // Check if user faculty is empty
+        List<String> userFaculties = userRepo.findFacultiesByUserId(userId);
+        logger.info("User faculties: {}", userFaculties);
+
+        
+            // Check if the user has any pending payments for the selected categories
+            List<Payment> pendingPayments = paymentRepo.findPendingPaymentsByUserIdAndCategoryIds(userId, categoryIds);
+
+            if (!pendingPayments.isEmpty()) {
+                throw new IllegalArgumentException("Cannot purchase categories. Pending payment exists for the selected categories.");
+            }
+        
+
+
+            // Fetch the category titles from the categories
+            List<String> requestedCategoryTitles = categories.stream()
+                    .map(Category::getCategoryTitle) // Assuming `getTitle()` returns categoryTitle
+                    .collect(Collectors.toList());
+            logger.info("Requested categories: {}", requestedCategoryTitles);
+
+        List<String> alreadyPurchased = requestedCategoryTitles.stream()
+                .filter(userFaculties::contains)
+                .collect(Collectors.toList());
+        logger.info("Already purchased categories: {}", alreadyPurchased);
+
+        if (!alreadyPurchased.isEmpty()) {
+            throw new IllegalArgumentException("User has already purchased categories: " + alreadyPurchased);
+        }
+
+        // Calculate total price
+        int totalPrice = categories.stream()
+                .mapToInt(category -> Integer.parseInt(category.getPrice()))
+                .sum();
+
+        // Apply discount
+        if (categoryIds.size() == 2) {
+            totalPrice *= 0.90; // Reduce by 10%
+        } else if (categoryIds.size() >= 3) {
+            totalPrice *= 0.85; // Reduce by 15%
+        }
+
+        // Map PaymentDto to Payment
+        Payment payment = modelMapper.map(paymentDto, Payment.class);
+        payment.setUser(user);
+        payment.setTotalPrice(totalPrice);
+        payment.setPayment_screensort("");
+        payment.setAddedDate(LocalDateTime.now());
+        payment.setCategories(categories);
+        payment.setStatus(PaymentStatus.PENDING); // Set status to pending
+
+        Payment newPayment = paymentRepo.save(payment);
+
+        // Create and send notification
+        String notificationMessage = String.format("Payment is pending approval and will be processed soon. Total amount: %d.", totalPrice);
+        notificationService.createNotification(user.getId(), notificationMessage);
+
+        return modelMapper.map(newPayment, PaymentDto.class);
+    }
+
+    
+    public void updateTotalPrice(Payment payment) {
+        if (payment.getCategories() != null && !payment.getCategories().isEmpty()) {
+            // Calculate the total price based on selected categories
+            Integer total = payment.getCategories().stream()
+                    .mapToInt(category -> Integer.parseInt(category.getPrice())) // Ensure this returns an integer
+                    .sum();
+            
+            // Update the total and totalPrice in the payment entity
+           
+            payment.setTotal(total);
+            payment.setTotalPrice(total); // Assuming both total and totalPrice should be the same
+        }
+    }  
+   
+
+    
+    @Override
+    public PaymentDto getPayment(Integer paymentId) {
+        // Find the payment by ID or throw an exception if not found
+        Payment payment = paymentRepo.findById(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", "Payment id", paymentId));
+
+        // Map the found payment to PaymentDto and return it
+        return modelMapper.map(payment, PaymentDto.class);
+    }
+
+
+
+    @Override
+    public PaymentDto updatePayment(PaymentDto paymentDto, Integer paymentId) {
+        // Find the payment by ID or throw an exception if not found
+        Payment payment = paymentRepo.findById(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", "Payment id", paymentId));
+
+        // Update the existing payment details with new data from PaymentDto
+        payment.setTotalPrice(paymentDto.getTotalPrice());
+        payment.setStatus(Payment.PaymentStatus.valueOf(paymentDto.getStatus().name()));
+        payment.setPayment_screensort(paymentDto.getPayment_screensort());
+        payment.setAddedDate(LocalDateTime.now());  // Optionally, you can update the date if necessary
+        payment.setCategories(paymentDto.getCategories().stream()
+                .map(categoryDto -> categoryRepo.findById(categoryDto.getCategoryId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Category", "Category id", categoryDto.getCategoryId())))
+                .collect(Collectors.toList())
+        );
+
+        // Save the updated payment to the database
+        Payment updatedPayment = paymentRepo.save(payment);
+
+        // Map the updated payment to PaymentDto and return it
+        return modelMapper.map(updatedPayment, PaymentDto.class);
+    }
+    
+    //---------------------approved payment-----------------------
+    
+    public PaymentDto approvePayment(Integer paymentId) {
+        Payment payment = paymentRepo.findById(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", "Payment id", paymentId));
+
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new IllegalArgumentException("Payment is already " + payment.getStatus());
+        }
+         
+       
+        // Update payment status to APPROVED
+        payment.setStatus(PaymentStatus.APPROVED);
+        paymentRepo.save(payment);
+
+//        
+       
+        User user = payment.getUser();
+       
+        Role newRole = this.roleRepo.findById(AppConstants.SUBSCRIBED_USER)
+              .orElseThrow(() -> new ResourceNotFoundException("Role", "id", AppConstants.SUBSCRIBED_USER));
+//
+      logger.info("Added new role: {} for user: {}", newRole.getName(), user.getEmail());
+//     
+      user.getRoles().clear();
+        user.getRoles().add(newRole);
+       
+        
+        userRepo.save(user);
+
+        // Update the user's faculty with the purchased categories
+        List<String> categoryNames = payment.getCategories().stream()
+                .map(Category::getCategoryTitle)
+                .collect(Collectors.toList());
+
+     // Log the category names
+        logger.info("Category Titles for paymentId {}: {}", paymentId, categoryNames);
+
+        List<String> existingFaculties = user.getFacult() != null ? user.getFacult() : new ArrayList<>();
+        existingFaculties.addAll(categoryNames);
+        
+        logger.info("Existing Faculties before update for userId {}: {}", user.getId(), existingFaculties);
+
+        user.setFacult(existingFaculties);  // Update the user's faculties
+        
+        logger.info("Updated Faculties after adding categories for userId {}: {}", user.getId(), user.getFacult());
+
+        userRepo.save(user);  // Save the user with the updated faculties
+        
+        // Create a notification message for the pending payment
+        String notificationMessage = String.format("Payment is approved." );
+
+        
+        notificationService.createNotification(user.getId(), notificationMessage);
+
+      
+        
+        return modelMapper.map(payment, PaymentDto.class);
+    }
+
+    
+    
+    
+    public PaymentDto rejectPayment(Integer paymentId) {
+        Payment payment = paymentRepo.findById(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", "Payment id", paymentId));
+
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new IllegalArgumentException("Payment is already " + payment.getStatus());
+        }
+
+        // Update payment status to REJECTED
+        payment.setStatus(PaymentStatus.REJECTED);
+        paymentRepo.save(payment);
+
+        User user=payment.getUser();
+        // Create a notification message for the pending payment
+        String notificationMessage = String.format("Payment is Rejected." );
+
+        
+        notificationService.createNotification(user.getId(), notificationMessage);
+
+      
+        return modelMapper.map(payment, PaymentDto.class);
+    }
+
+    
+    
+    
+    
+
+    @Override
+    public List<PaymentDto> getAllPayments() {
+        return paymentRepo.findAll().stream()
+                .map(payment -> modelMapper.map(payment, PaymentDto.class))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public boolean isCategoryPaymentByUser(Integer userId, Integer categoryId) {
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User", "User id", userId));
+
+        Category category = categoryRepo.findById(categoryId)
+                .orElseThrow(() -> new ResourceNotFoundException("Category", "Category id", categoryId));
+
+        return paymentRepo.findByUserAndCategory(user, category).isPresent();
+    }
+
+    
+//    @Override
+//    public Integer getMonthlyRevenue() {
+//        LocalDateTime startOfMonth = LocalDateTime.now().with(TemporalAdjusters.firstDayOfMonth()).truncatedTo(ChronoUnit.DAYS);
+//        LocalDateTime endOfMonth = startOfMonth.plusMonths(1);
+//        return paymentRepo.calculateTotalRevenue(startOfMonth, endOfMonth);
+//    }
+    
+    @Override
+    public Map<String, Integer> getMonthlyRevenues() {
+        Map<String, Integer> monthlyRevenues = new LinkedHashMap<>();
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime startOfYear = now.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS);
+
+        for (int month = 0; month < now.getMonthValue(); month++) {
+            LocalDateTime startOfMonth = startOfYear.plusMonths(month);
+            LocalDateTime endOfMonth = startOfMonth.plusMonths(1);
+
+            Integer monthlyRevenue = paymentRepo.calculateTotalRevenue(startOfMonth, endOfMonth);
+            String monthName = startOfMonth.getMonth().toString(); // Get the month name (e.g., JANUARY)
+
+            monthlyRevenues.put(monthName, monthlyRevenue != null ? monthlyRevenue : 0);
+        }
+        
+        return monthlyRevenues;
+    }
+
+    
+
+//    @Override
+//    public Integer getWeeklyRevenue() {
+//        LocalDateTime startOfWeek = LocalDateTime.now().with(java.time.DayOfWeek.MONDAY).truncatedTo(ChronoUnit.DAYS);
+//        LocalDateTime endOfWeek = startOfWeek.plusWeeks(1);
+//        return paymentRepo.calculateTotalRevenue(startOfWeek, endOfWeek);
+//    }
+
+   
+
+//    @Override
+//    public Integer getYearlyRevenue() {
+//        LocalDateTime startOfYear = LocalDateTime.now().with(TemporalAdjusters.firstDayOfYear()).truncatedTo(ChronoUnit.DAYS);
+//        LocalDateTime endOfYear = startOfYear.plusYears(1);
+//        return paymentRepo.calculateTotalRevenue(startOfYear, endOfYear);
+//    }
+
+//    @Override
+//    public Integer getDailyRevenue() {
+//        LocalDateTime startOfDay = LocalDateTime.now().with(LocalTime.MIN);  // Beginning of today
+//        LocalDateTime endOfDay = startOfDay.plusDays(1);  // End of today
+//        return paymentRepo.calculateTotalRevenue(startOfDay, endOfDay);
+//    }
+}

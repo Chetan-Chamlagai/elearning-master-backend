@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: elp-ingress
+  namespace: elearning
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+  - hosts:
+    - elp.mytufan.com
+    secretName: mytufan-gateway-tls
+  rules:
+  - host: elp.mytufan.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: elp-service
+            port:
+              number: 8086
